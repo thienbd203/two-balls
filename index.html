@@ -75,6 +75,9 @@
   let hits = 0;
   // Trạng thái chống đếm lặp khi còn chồng lấn
   let touching = false;            // đang trong trạng thái chạm (đã kích hoạt lần này)
+  // Hiệu ứng Ghost cho bóng B
+  const TRAIL_LEN = 28;            // độ dài vệt mờ
+  const trailB = [];               // lưu lịch sử vị trí {x,y}
 
   // physics config (cả 2 bóng bằng nhau)
   const BALL_RADIUS = 28;
@@ -162,6 +165,7 @@
     setRandomDir(ballB, ballB.speed);
     B_active = ballB.speed > 0;
     touching = false;
+    trailB.length = 0; // xóa vệt mờ
     draw();
   });
 
@@ -264,6 +268,12 @@
     } else {
       touching = false;
     }
+
+    // Cập nhật vệt mờ cho bóng B
+    if (B_active) {
+      trailB.push({ x: ballB.x, y: ballB.y });
+      if (trailB.length > TRAIL_LEN) trailB.shift();
+    }
   }
 
   function draw() {
@@ -281,11 +291,35 @@
     ctx.fill();
     ctx.closePath();
 
+    // Vẽ hiệu ứng Ghost (vệt mờ) cho bóng B
+    if (trailB.length > 1) {
+      ctx.save();
+      const maxAlpha = 0.35;
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < trailB.length; i++) {
+        const t = i / (trailB.length - 1);
+        const alpha = t * maxAlpha;
+        ctx.globalAlpha = alpha;
+        const p = trailB[i];
+        const r = ballB.r * (0.9 + 0.1 * t); // hơi lớn dần nhẹ
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+        ctx.fillStyle = ballB.color;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Vẽ bóng B chính với chút glow
+    ctx.save();
+    ctx.shadowBlur = 18;
+    ctx.shadowColor = ballB.color;
     ctx.beginPath();
     ctx.arc(ballB.x, ballB.y, ballB.r, 0, Math.PI*2);
     ctx.fillStyle = ballB.color;
     ctx.fill();
     ctx.closePath();
+    ctx.restore();
 
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = '12px ui-sans-serif, system-ui';
