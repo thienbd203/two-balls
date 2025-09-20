@@ -73,6 +73,8 @@
   let last = performance.now();
   let running = false;
   let hits = 0;
+  // Trạng thái chống đếm lặp khi còn chồng lấn
+  let touching = false;            // đang trong trạng thái chạm (đã kích hoạt lần này)
 
   // physics config (cả 2 bóng bằng nhau)
   const BALL_RADIUS = 28;
@@ -159,6 +161,7 @@
     setRandomDir(ballA, ballA.speed);
     setRandomDir(ballB, ballB.speed);
     B_active = ballB.speed > 0;
+    touching = false;
     draw();
   });
 
@@ -216,8 +219,10 @@
   }
 
   function update(dt) {
+    // A vẫn di chuyển như bình thường theo vận tốc cố định, không bị ảnh hưởng bởi va chạm
     ballA.x += ballA.vx * dt;
     ballA.y += ballA.vy * dt;
+    // B di chuyển khi đang hoạt động
     if (B_active) {
       ballB.x += ballB.vx * dt;
       ballB.y += ballB.vy * dt;
@@ -226,17 +231,38 @@
     handleWall(ballA);
     handleWall(ballB);
 
+    // Phát hiện va chạm theo cạnh-rìa, chỉ kích hoạt một lần khi vừa chạm
     if (circlesCollide(ballA, ballB)) {
-      hits += 1;
-      hitsEl.textContent = hits;
-      ballB.speed += Number(nSlider.value); // không giới hạn tốc độ, tăng theo N
-      speedBEl.textContent = Math.round(ballB.speed);
+      if (!touching) {
+        touching = true;
+        hits += 1;
+        hitsEl.textContent = hits;
+        ballB.speed += Number(nSlider.value); // tăng theo N, không giới hạn
+        speedBEl.textContent = Math.round(ballB.speed);
 
-      const magBpre = Math.hypot(ballB.vx, ballB.vy) || 1;
-      ballB.vx = ballB.vx / magBpre * ballB.speed;
-      ballB.vy = ballB.vy / magBpre * ballB.speed;
+        // A là "không thể lay chuyển": không thay đổi vận tốc của A do va chạm
+        // B ngay lập tức đi ra xa A theo hướng pháp tuyến tại điểm chạm, với tốc độ mới
+        const dx = ballB.x - ballA.x;
+        const dy = ballB.y - ballA.y;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const nx = dx / dist;
+        const ny = dy / dist;
 
-      resolveCollision(ballA, ballB);
+        // Tách B ra mép để tránh chồng lấn kéo dài
+        const minDist = ballA.r + ballB.r;
+        const overlap = Math.max(0, minDist - dist);
+        if (overlap > 0) {
+          const sep = overlap + 0.5; // đẩy ra thêm chút để chắc chắn rời nhau
+          ballB.x = ballA.x + nx * (dist + sep);
+          ballB.y = ballA.y + ny * (dist + sep);
+        }
+
+        // Đặt vận tốc B đi ra xa A ngay lập tức
+        ballB.vx = nx * ballB.speed;
+        ballB.vy = ny * ballB.speed;
+      }
+    } else {
+      touching = false;
     }
   }
 
