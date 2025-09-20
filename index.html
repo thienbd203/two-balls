@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Trò chơi 2 quả bóng</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, 'Segoe UI', Arial; display:flex; gap:20px; padding:20px; }
+    .panel { width:320px; }
+    canvas { background: #ffffff;}
+    label { display:block; margin-top:12px; font-size:14px; color:#0f172a; }
+    input[type=range] { width:100%; }
+    .row { display:flex; gap:8px; margin-top:10px; }
+    button { padding:8px 12px; border-radius:6px; border:none; cursor:pointer; background:#0891b2; color:white; }
+    button.secondary { background:#334155; }
+    .info { margin-top:12px; font-size:14px; color:#0f172a; }
+  </style>
+</head>
+<body>
+  <div>
+    <canvas id="game" width="600" height="600"></canvas>
+  </div>
+
+  <div class="panel">
+    <h3>Trò chơi 2 quả bóng</h3>
+    <label>Vận tốc cố định của Quả Bóng A (X): <span id="vxVal">150</span> px/s</label>
+    <input id="vx" type="range" min="20" max="800" value="150">
+
+    <label>Vận tốc khởi đầu của Quả Bóng B (Y): <span id="vyVal">60</span> px/s</label>
+    <input id="vy" type="range" min="0" max="600" value="60">
+
+    <label>Gia tăng vận tốc của B mỗi lần chạm (N): <span id="nVal">1</span> px/s</label>
+    <input id="n" type="range" min="1" max="100" value="1">
+
+    <div class="row">
+      <button id="start">Bắt đầu / Tiếp tục</button>
+      <button id="pause" class="secondary">Tạm dừng</button>
+      <button id="reset" class="secondary">Đặt lại</button>
+    </div>
+
+    <div class="info">
+      <div>Lần chạm (B → A): <strong id="hits">0</strong></div>
+      <div>Tốc độ hiện tại của B: <strong id="speedB">60</strong> px/s</div>
+      <small>Ghi chú: Mỗi lần B chạm A sẽ tăng vận tốc của B thêm N (px/s).</small>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // UI
+  const vxSlider = document.getElementById('vx');
+  const vySlider = document.getElementById('vy');
+  const nSlider = document.getElementById('n');
+  const vxVal = document.getElementById('vxVal');
+  const vyVal = document.getElementById('vyVal');
+  const nVal = document.getElementById('nVal');
+  const startBtn = document.getElementById('start');
+  const pauseBtn = document.getElementById('pause');
+  const resetBtn = document.getElementById('reset');
+  const hitsEl = document.getElementById('hits');
+  const speedBEl = document.getElementById('speedB');
+
+  vxVal.textContent = vxSlider.value;
+  vyVal.textContent = vySlider.value;
+  speedBEl.textContent = vySlider.value;
+  nVal.textContent = nSlider.value;
+
+  // Game state
+  let last = performance.now();
+  let running = false;
+  let hits = 0;
+  // Trạng thái chống đếm lặp khi còn chồng lấn
+  let touching = false;            // đang trong trạng thái chạm (đã kích hoạt lần này)
+  // Hiệu ứng Ghost cho bóng B
+  // Độ dài vệt mờ phụ thuộc tốc độ của bóng B (càng nhanh, vệt càng dài)
+  const TRAIL_LEN_MIN = 12;        // số điểm tối thiểu của vệt
+  const TRAIL_LEN_MAX = 100;       // số điểm tối đa của vệt
+  const SPEED_REF = 800;           // tốc độ ~để đạt vệt tối đa (px/s)
+  function dynamicTrailLenCount() {
+    const f = Math.max(0, Math.min(1, ballB.speed / SPEED_REF));
+    return Math.round(TRAIL_LEN_MIN + (TRAIL_LEN_MAX - TRAIL_LEN_MIN) * f);
+  }
+  const trailB = [];               // lưu lịch sử vị trí {x,y}
+
+  // physics config (cả 2 bóng bằng nhau)
+  const BALL_RADIUS = 28;
+
+  const ballA = {
+    x: W * 0.3,
+    y: H * 0.5,
+    r: BALL_RADIUS,
+    speed: Number(vxSlider.value), // X fixed magnitude in px/s
+    vx: 0,
+    vy: 0,
+    color: '#ef4444'
+  };
+
+  const ballB = {
+    x: W * 0.7,
+    y: H * 0.5,
+    r: BALL_RADIUS,
+    speed: Number(vySlider.value), // Y current magnitude in px/s (starts maybe 0)
+    vx: 0,
+    vy: 0,
+    color: '#60a5fa'
+  };
+
+  // Helper: set a velocity vector of given magnitude and random direction
+  function setRandomDir(ball, speed) {
+    const angle = Math.random() * Math.PI * 2;
+    ball.vx = Math.cos(angle) * speed;
+    ball.vy = Math.sin(angle) * speed;
+  }
+
+  // Initialize directions
+  setRandomDir(ballA, ballA.speed);
+  setRandomDir(ballB, ballB.speed);
+
+  // When B's speed is 0 we keep it stationary until user presses start.
+  let B_active = true;
+  if (ballB.speed === 0) B_active = false;
+
+  // UI events
+  vxSlider.addEventListener('input', () => {
+    vxVal.textContent = vxSlider.value;
+    ballA.speed = Number(vxSlider.value);
+    const mag = Math.hypot(ballA.vx, ballA.vy) || 1;
+    ballA.vx = ballA.vx / mag * ballA.speed;
+    ballA.vy = ballA.vy / mag * ballA.speed;
+  });
+
+  vySlider.addEventListener('input', () => {
+    vyVal.textContent = vySlider.value;
+    ballB.speed = Number(vySlider.value);
+    speedBEl.textContent = ballB.speed;
+    if (!B_active && ballB.speed > 0) {
+      setRandomDir(ballB, ballB.speed);
+      B_active = true;
+    } else {
+      const mag = Math.hypot(ballB.vx, ballB.vy) || 1;
+      ballB.vx = ballB.vx / mag * ballB.speed;
+      ballB.vy = ballB.vy / mag * ballB.speed;
+    }
+  });
+
+  nSlider.addEventListener('input', () => {
+    nVal.textContent = nSlider.value;
+  });
+
+  startBtn.addEventListener('click', () => {
+    running = true;
+    if (!B_active && ballB.speed > 0) {
+      setRandomDir(ballB, ballB.speed);
+      B_active = true;
+    }
+  });
+  pauseBtn.addEventListener('click', () => running = false);
+  resetBtn.addEventListener('click', () => {
+    running = false;
+    hits = 0;
+    hitsEl.textContent = hits;
+    ballA.x = W * 0.3; ballA.y = H * 0.5;
+    ballB.x = W * 0.7; ballB.y = H * 0.5;
+    ballA.speed = Number(vxSlider.value);
+    ballB.speed = Number(vySlider.value);
+    speedBEl.textContent = ballB.speed;
+    setRandomDir(ballA, ballA.speed);
+    setRandomDir(ballB, ballB.speed);
+    B_active = ballB.speed > 0;
+    touching = false;
+    trailB.length = 0; // xóa vệt mờ
+    draw();
+  });
+
+  function circlesCollide(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const distSq = dx*dx + dy*dy;
+    const minDist = a.r + b.r;
+    return distSq <= minDist * minDist;
+  }
+
+  function resolveCollision(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.0001;
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    const dvx = a.vx - b.vx;
+    const dvy = a.vy - b.vy;
+
+    const rel = dvx * nx + dvy * ny;
+    if (rel > 0) return;
+
+    const impulse = -2 * rel / 2;
+
+    a.vx += impulse * nx;
+    a.vy += impulse * ny;
+    b.vx -= impulse * nx;
+    b.vy -= impulse * ny;
+
+    const overlap = (a.r + b.r) - dist;
+    if (overlap > 0) {
+      const sep = overlap / 2 + 0.5;
+      a.x -= nx * sep;
+      a.y -= ny * sep;
+      b.x += nx * sep;
+      b.y += ny * sep;
+    }
+
+    const magA = Math.hypot(a.vx, a.vy) || 1;
+    a.vx = a.vx / magA * a.speed;
+    a.vy = a.vy / magA * a.speed;
+
+    const magB = Math.hypot(b.vx, b.vy) || 1;
+    b.vx = b.vx / magB * b.speed;
+    b.vy = b.vy / magB * b.speed;
+  }
+
+  function handleWall(b) {
+    if (b.x - b.r <= 0 && b.vx < 0) b.vx = -b.vx;
+    if (b.x + b.r >= W && b.vx > 0) b.vx = -b.vx;
+    if (b.y - b.r <= 0 && b.vy < 0) b.vy = -b.vy;
+    if (b.y + b.r >= H && b.vy > 0) b.vy = -b.vy;
+  }
+
+  function update(dt) {
+    // A vẫn di chuyển như bình thường theo vận tốc cố định, không bị ảnh hưởng bởi va chạm
+    ballA.x += ballA.vx * dt;
+    ballA.y += ballA.vy * dt;
+    // B di chuyển khi đang hoạt động
+    if (B_active) {
+      ballB.x += ballB.vx * dt;
+      ballB.y += ballB.vy * dt;
+    }
+
+    handleWall(ballA);
+    handleWall(ballB);
+
+    // Phát hiện va chạm theo cạnh-rìa, chỉ kích hoạt một lần khi vừa chạm
+    if (circlesCollide(ballA, ballB)) {
+      if (!touching) {
+        touching = true;
+        hits += 1;
+        hitsEl.textContent = hits;
+        ballB.speed += Number(nSlider.value); // tăng theo N, không giới hạn
+        speedBEl.textContent = Math.round(ballB.speed);
+
+        // A là "không thể lay chuyển": không thay đổi vận tốc của A do va chạm
+        // B ngay lập tức đi ra xa A theo hướng pháp tuyến tại điểm chạm, với tốc độ mới
+        const dx = ballB.x - ballA.x;
+        const dy = ballB.y - ballA.y;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // Tách B ra mép để tránh chồng lấn kéo dài
+        const minDist = ballA.r + ballB.r;
+        const overlap = Math.max(0, minDist - dist);
+        if (overlap > 0) {
+          const sep = overlap + 0.5; // đẩy ra thêm chút để chắc chắn rời nhau
+          ballB.x = ballA.x + nx * (dist + sep);
+          ballB.y = ballA.y + ny * (dist + sep);
+        }
+
+        // Đặt vận tốc B đi ra xa A ngay lập tức
+        ballB.vx = nx * ballB.speed;
+        ballB.vy = ny * ballB.speed;
+      }
+    } else {
+      touching = false;
+    }
+
+    // Cập nhật vệt mờ cho bóng B (cắt theo độ dài phụ thuộc tốc độ)
+    if (B_active) {
+      trailB.push({ x: ballB.x, y: ballB.y });
+      const limit = dynamicTrailLenCount();
+      while (trailB.length > limit) trailB.shift();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1,1,W-2,H-2);
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(ballA.x, ballA.y, ballA.r, 0, Math.PI*2);
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.closePath();
+
+    // Vẽ hiệu ứng Ghost (vệt mờ) cho bóng B (chỉ viền trắng, không glow)
+    if (trailB.length > 1) {
+      ctx.save();
+      const maxAlpha = 0.35;
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 0; i < trailB.length; i++) {
+        const t = i / (trailB.length - 1);
+        const alpha = t * maxAlpha;
+        ctx.globalAlpha = alpha;
+        const p = trailB[i];
+        const r = ballB.r * (0.9 + 0.1 * t); // hơi lớn dần nhẹ
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+        ctx.lineWidth = 1 + 2 * t;
+        ctx.strokeStyle = '#000000';
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Vẽ bóng B chính chỉ viền trắng (không glow, không fill)
+    ctx.save();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(ballB.x, ballB.y, ballB.r, 0, Math.PI*2);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#000000';
+    ctx.stroke();
+    ctx.closePath();
+    ctx.restore();
+
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.font = '12px ui-sans-serif, system-ui';
+    ctx.fillText('A speed (X): ' + Math.round(ballA.speed) + ' px/s', 8, 16);
+    ctx.fillText('B speed (Y): ' + Math.round(ballB.speed) + ' px/s', 8, 34);
+    ctx.fillText('Hits: ' + hits, 8, 52);
+  }
+
+  function loop(now) {
+    const dt = (now - last) / 1000;
+    last = now;
+    if (running) {
+      update(dt);
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  draw();
+  requestAnimationFrame(loop);
+
+  canvas.addEventListener('click', () => running = !running);
+})();
+</script>
+</body>
+</html>
